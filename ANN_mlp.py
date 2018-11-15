@@ -1,33 +1,50 @@
 """
 PURPOSE:
-Grid search for MLP Neural Network Regression implemented in TensorFlow (TF) basic
+Build Multilayer Perceptron Artificial Neural Networks implemented in TensorFlow (TF)
 
-INPUTS:
+INPUT:
     REQUIRED:
-    -x      File with feature information
-    -y      File with values you want to predict 
-    -y_name Name of column in y with the value you want to predict (Default = Y)
-    -ho     File with holdout set
-    -save   Name to include in RESULTS file (i.e. what dataset are you running)
-    -arc    Desired NN architecture as comma separated layer sizes (i.e. 100,50 or 200,200,50)
-    -actfun What activation function to use (sigmoid (default), relu, elu)
-    -epochs Number of epochs to train on (default = 1000)
-    -lrate     Learning rate (default = 0.01)
-    -dropout     Parameter for dropout (i.e. drop out) regularization (default = 0, i.e. no dropout)
-    -l2     Parameter for L2 (i.e. shrinkage) regularization (default = 0, i.e. no shrinkage)
+    -x          File with feature information
+    -y          File with values you want to predict 
+    -y_name     Name of column in y with the value you want to predict (Default = Y)
+    -ho         File with holdout set
+    -save       Name to include in RESULTS file (i.e. what dataset are you running)
+    
+    OPTIONAL:
+    # Input/Output Functions
+        -f          Select function to perform (gs, run, full*) *Default
+        -feat       File with list of features from -x to include
+        -norm       T/F Normalize Y (default = T)
+        -tag        Identifier string to add to RESULTS file
+        -sep        Specify seperator in -x and -y (Default = '\t')
+        -s_weights  T/F Save the trained weights from the trained network (only if hidden layers <= 3)
+        -s_losses   T/F Save the training, validation, and testing losses from final model training
 
-OUTPUTS:
-    -RESULTS  Summary of results from the run located in the dir where the script was called.
-                    Results will be appended to this file as they complete. Use -save to give
-                    a run a unique identifier.     
+    # Specify hyperparameters (only if -f run)
+        -params    Output from -f gs (i.e. SAVE_GridSearch.txt)
+        -actfun     Activation function. (relu, sigmoid*) *Default
+        -lrate      Learning rate. Default = 0.01
+        -dropout    Dropout rate. Default = 0.1 (i.e. drop out 10% of nodes each epoch)
+        -l2         Shrinkage parameter for L2 regularization. Default = 0
+        -arch       MLP architecture as comma separated layer sizes (e.g. 100,50 or 200,100,50)
+    
+    # Training behavior 
+        -max_epoch     Max number of epochs to iterate through. Default = 50,000
+        -epoch_thresh  Threshold for percent change in MSE for early stopping. Default = 0.001
+        -burnin        Number of epochs before start counting for early stopping. Default = 100
+        -val_perc      What percent of the training set to hold back for validation. Default = 0.1
+        -loss_type     Loss function to minimize during training. Only MSE available now. Default = mse
+
+OUTPUT:
+    -SAVE_GridSearch.txt    Results from grid search. Appends to SAVE_GridSearch.txt if already exists
+    -RESULTS.txt            Summary of results from final model (from -f run/full)
+    -SAVE_losses.csv        Training, validation, and testing losses for each epoch in final model (-s_losses t)
+    -SAVE_Weights_X.csv     Final trained ANN weights for hidden layers (_HL#) and final connection (_fin)
+    
 
 EXAMPLE ON HPCC:
-Log on to development node with GPUs:
-$ ssh dev-intedropout6-k80   
-Load linuxbrew, modules required by TF, & activate the TF python environment
-$ source /opt/software/tensorflow/1.1.0/load_tf
-Run example MLP (files in /mnt/home/azodichr/GitHub/TF-GenomicSelection/):
-$ python TF_MLP_GridSearch.py -x geno.csv -y pheno.csv -label Yld_Env1 -cv CVFs.csv -save wheat -arc 100,50,20
+$ source /mnt/home/azodichr/python3-tfcpu/bin/activate
+$ python ANN_mlp.py -f full -x geno.csv -y pheno.csv -y_name HT -sep ',' -ho holdout.txt -save mlp_HT -gs t -gs_reps 10 -weights xavier -norm t
 
 """
 
@@ -55,9 +72,7 @@ def main():
     FUNCTION = 'full'
     
     # Input and Output info
-    y_name = 'Y'
-    SAVE = 'test'
-    TAG = FEAT = norm = ''
+    TAG, FEAT, SAVE, y_name, norm = '', '', 'test', 'Y', 't'
     save_weights = save_losses = 'f'
 
     # Hyperparameters
@@ -65,7 +80,6 @@ def main():
     params = ''
 
     # Grid Search Hyperparameter Space
-    run_gs = 'f'
     gs_reps = 10
     list_dropout = list_l2 = [0.0, 0.1, 0.5]
     list_lrate = [0.01, 0.001]
@@ -87,7 +101,6 @@ def main():
     ##################
     ### User Input ###
     ##################
-
     for i in range (1,len(sys.argv),2):
       if sys.argv[i].lower() == "-f":
         FUNCTION = sys.argv[i+1]
@@ -97,6 +110,8 @@ def main():
         Y_file = sys.argv[i+1]
       if sys.argv[i].lower() == '-ho':
         ho = sys.argv[i+1]
+      if sys.argv[i].lower() == '-val_perc':
+        val_perc = float(sys.argv[i+1])
       if sys.argv[i].lower() == '-sep':
         SEP = sys.argv[i+1]
       if sys.argv[i].lower() == '-norm':
@@ -105,6 +120,10 @@ def main():
         FEAT = sys.argv[i+1]
       if sys.argv[i].lower() == "-weights":
         WEIGHTS = sys.argv[i+1]
+      if sys.argv[i].lower() == "-mu":
+        mu = float(sys.argv[i+1])
+      if sys.argv[i].lower() == "-sigma":
+        sigma = float(sys.argv[i+1])
       if sys.argv[i].lower() == "-tag":
         TAG = sys.argv[i+1]
       if sys.argv[i].lower() == "-y_name":
@@ -117,6 +136,8 @@ def main():
         epoch_thresh = float(sys.argv[i+1])
       if sys.argv[i].lower() == "-epoch_max":
         epoch_thresh = int(sys.argv[i+1])
+      if sys.argv[i].lower() == "-loss_type":
+        loss_type = sys.argv[i+1]        
       if sys.argv[i].lower() == "-params":
         params = sys.argv[i+1]
       if sys.argv[i].lower() == "-burnin":
@@ -217,7 +238,8 @@ def main():
         gs_results = pd.DataFrame()
         gs_count = 0
         gs_length = len(list_dropout) * len(list_l2) * len(list_lrate) * len(list_actfun) * len(list_arch) * gs_reps
-        for r in gs_reps:
+        for r in range(0,gs_reps):
+            print(range(0, gs_reps))
             for dropout in list_dropout:
                 for l2 in list_l2:
                     for lrate in list_lrate:
