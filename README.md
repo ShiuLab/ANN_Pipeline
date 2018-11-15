@@ -2,33 +2,34 @@
 Scripts for artificial neural networks for the Shiu Lab
 
 ## Environment Requirements
-* biopython                 1.68
-* matplotlib                1.5.1
+* python                    3.6
 * numpy                     1.11.3
 * pandas                    0.18.1
-* python                    3.4.4
-* scikit-learn              0.18.1
-* scipy                     0.18.1
+* tensorflow                
 
-Example: 
-
-    wget http://repo.continuum.io/miniconda/Miniconda3-3.7.0-Linux-x86_64.sh -O ~/miniconda.sh
-    bash ~/miniconda.sh -b -p $HOME/miniconda
-    export PATH="$HOME/miniconda/bin:$PATH"
-    conda install biopython
-    conda install matplotlib
-    conda install pandas
-    conda install scikit-learn
+Tensorflow typically requires special installation. See the [HPCC instructions](https://wiki.hpcc.msu.edu/display/ITH/TensorFlow) at MSU as an example. 
     
-MSU HPCC: export PATH=/mnt/home/azodichr/miniconda3/bin:$PATH
-
-Calculon2: export PATH=/home/azodi/miniconda/bin:$PATH
+MSU HPCC: source /mnt/home/azodichr/python3-tfcpu/bin/activate
+Calculon2: TBD
 
 
 ## Multi-Layer Perceptrons
-Use this code to generate fully connected artificial neural networks. Note that a few features (e.g.: saving trained network weights) are only available when there are 3 or fewer hidden layers. 
+Use this code to generate fully connected artificial neural networks. Note that a few features (e.g.: saving trained network weights) are only available for networks with =< 3 hidden layers. 
 
 
+To Run:
+
+```python ANN_mlp.py -f full -x [path/to/feature_data] -y [path/to/y_data] -y_name Y_Col_Name -ho [path/to/holdout_list] -save OUTPUT_NAME```
+* For more info/additional options run ANN_mlp.py with no parameters
+
+Real Example:
+Break up the run by running 1 replicate of the grid search 10 times (-f gs -gs_reps 1), once done, use grid search results as input to build final models (-f run -params SAVE_GridSearch.txt)
+
+```
+for i in $(seq 1 10); do python ANN_mlp.py -f gs -x geno.csv -y pheno.csv -y_name HT -sep ',' -ho holdout.txt -save mlp_HT -gs t -gs_reps 1 -weights xavier -norm t; done
+python ANN_mlp.py -f run -x geno.csv -y pheno.csv -y_name HT -sep ',' -ho holdout.txt -save mlp_HT_final -params mlp_HT_GridSearch.txt -weights xavier -norm t
+```
+* For more info/additional options run ANN_mlp.py with no parameters
 
 
 
