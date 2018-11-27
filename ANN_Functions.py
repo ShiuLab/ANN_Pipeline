@@ -10,10 +10,41 @@ import pandas as pd
 import tensorflow as tf
 from datetime import datetime
 import timeit
+import math
 
 class fun(object):
 	def __init__(self, filename):
 		self.tokenList = open(filename, 'r')
+
+
+	def train_valid_test_split(df, ho, y_name, val_perc):
+	  """ Splitting data into training, validation (using val_perc) and testing (using holdout)"""
+
+	  with open(ho) as ho_file:
+	      ho_instances = ho_file.read().splitlines()
+	      num_ho = len(ho_instances)
+	  try:
+	      test = df.loc[ho_instances, :]
+	      train = df.drop(ho_instances)
+	  except:
+	      ho_instances = [int(x) for x in ho_instances]
+	      test = df.loc[ho_instances, :]
+	      train = df.drop(ho_instances)
+
+	  val_set_index = np.random.rand(len(train)) < val_perc
+	  valid = train[val_set_index]
+	  train = train[~val_set_index]
+
+	  X_train = train.drop(y_name, axis=1).values
+	  X_valid = valid.drop(y_name, axis=1).values
+	  X_test = test.drop(y_name, axis=1).values
+	  Y_train = train.loc[:, y_name].values
+	  Y_valid = valid.loc[:, y_name].values
+	  Y_test = test.loc[:, y_name].values
+	  X = df.drop(y_name, axis=1).values
+	  Y = df.loc[:, y_name].values
+
+	  return X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test
 
 	def initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma):
 		"""
@@ -119,8 +150,6 @@ class fun(object):
 		return out_layer
 
 	def save_trained_weights(SAVE, tvars, tvars_vals, archit, feat_list):
-
-
 		for var, val in zip(tvars, tvars_vals):
 			if var.name == 'Variable:0':
 				col_names = ['Node_1_%s' % s for s in range(1,archit[0]+1)] 
@@ -157,4 +186,90 @@ class fun(object):
 
 		weights_l1.to_csv(SAVE+'_Weights_HL1.csv', index=True)
 		weights_final.to_csv(SAVE+'_Weights_Fin.csv', index=True)
+	
+	def conv2d(data_in, W, conv_r, conv_c):
+		return tf.nn.conv2d(data_in, W, strides=[1,1,1,1], padding='SAME') # strides=[1, 1, 1, 1]
+
+	def maxpool2d(x):
+  		return tf.nn.max_pool(x, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
+
+	def convolutional_neural_network(x, conv_r, conv_c, shape_r, shape_c, dropout, actfun):
+		shape_r_2pool = int(math.ceil(shape_r/4))
+		shape_c_2pool = int(math.ceil(shape_c/4))
+		weights = {
+		'W_conv1': tf.Variable(tf.random_normal([conv_r, conv_c, 1, 32])),
+		  'W_conv2': tf.Variable(tf.random_normal([conv_r, conv_c, 32, 64])),
+		  'W_fc': tf.Variable(tf.random_normal([shape_r_2pool*shape_c_2pool*64, 1024])),
+		  'out': tf.Variable(tf.random_normal([1024, 1]))}
+		biases = {
+		'b_conv1': tf.Variable(tf.random_normal([32])),
+		  'b_conv2': tf.Variable(tf.random_normal([64])),
+		  'b_fc': tf.Variable(tf.random_normal([1024])),
+		  'out': tf.Variable(tf.random_normal([1]))}
+
+		# Reshape input to a 4D tensor 
+		x = tf.reshape(x, shape=[-1, shape_r, shape_c, 1])
+
+		# Convolution Layer 1 - Max Pooling 1 - Convlution Layer 2 - Max Pooling 2
+		if actfun.lower() == 'relu':
+			conv1 = tf.nn.relu(fun.conv2d(x, weights['W_conv1'], conv_r, conv_c) + biases['b_conv1'])
+			conv1 = fun.maxpool2d(conv1)
+			conv2 = tf.nn.relu(fun.conv2d(conv1, weights['W_conv2'], conv_r, conv_c) + biases['b_conv2'])
+			conv2 = fun.maxpool2d(conv2)
+		elif actfun.lower() == 'sigmoid':
+			conv1 = tf.nn.sigmoid(fun.conv2d(x, weights['W_conv1'], conv_r, conv_c) + biases['b_conv1'])
+			conv1 = fun.maxpool2d(conv1)
+			conv2 = tf.nn.sigmoid(fun.conv2d(conv1, weights['W_conv2'], conv_r, conv_c) + biases['b_conv2'])
+			conv2 = fun.maxpool2d(conv2)
+		else:
+			print('Activation function not accepted. Use: sigmoid or relu')
+			quit()
+
+		# Fully connected layer
+		fc = tf.reshape(conv2, [-1, shape_r_2pool * shape_c_2pool * 64]) # Reshape conv2 output to fit fully connected layer
+		if actfun.lower() == 'relu':
+			fc = tf.nn.relu(tf.matmul(fc, weights['W_fc']) + biases['b_fc'])
+		if actfun.lower() == 'sigmoid':
+			fc = tf.nn.sigmoid(tf.matmul(fc, weights['W_fc']) + biases['b_fc'])
+		if dropout > 0:
+			print('Applying Dropout (dropout) with dropout rate = %f' % dropout)
+			fc = tf.nn.dropout(fc, 1-dropout) # Keep rate = 1 - dropout rate
+		
+		output = tf.matmul(fc, weights['out']) + biases['out']
+
+		return output 
+
+	def Image2Features(X_file, shape_r, shape_c):
+		"""
+		Read in images from directory (X_file), scale to fit shape, then flatten into one X file.
+		"""
+		from PIL import Image
+
+		if os.path.isfile(X_file + 'X_processed.csv'):
+			print('Pulling already processed image data from %s/X_processed.csv' % X_file)
+			x = pd.read_csv(X_file + 'X_processed.csv' , sep=',', index_col = 0)
+
+		else:
+			print('Converting images to pixle feature file...')
+			col_names = ["p_" + str(i+1) for i in range(shape_r*shape_c)]
+			x = pd.DataFrame(columns=col_names)
+			size = shape_r, shape_c
+
+			for f in os.listdir(X_file):
+				if f.startswith("."):
+					pass
+				else:
+					try:
+						print(f)
+						img = Image.open(X_file + f).convert('L') # Converts to 8-bit grayscale
+						img.thumbnail(size)
+						img_data = list(img.getdata())
+						x.loc[f] = img_data
+					except:
+						print('%s would not convert to pixels...' % f)
+			x.to_csv(X_file + 'X_processed.csv', sep=',')
+
+		print(x.head())
+		print(x.shape)
+		return x 
 
