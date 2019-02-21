@@ -75,6 +75,7 @@ def main():
     # Input and Output info
     SEP, TAG, FEAT, SAVE, y_name, norm = '\t', '', '', 'test', 'Y', 't'
     save_weights = save_losses = save_yhat = 'f'
+    n_reps = 100
 
     # Hyperparameters
     actfun, arc, lrate, dropout, l2 = 'sigmoid', '10,5', 0.01, 0.1, 0.0
@@ -82,10 +83,11 @@ def main():
 
     # Grid Search Hyperparameter Space
     gs_reps = 10
-    list_dropout = list_l2 = [0.0, 0.1, 0.5]
+    list_dropout = [0.1, 0.5]
+    list_l2 = [0.0, 0.1, 0.5]
     list_lrate = [0.01, 0.001]
     list_actfun = ["sigmoid", "relu"]
-    list_arch = ["10", "50", "100", "10,5", "50,25", "100,50", "10,5,5", "50,25,10", "100,50,25"]
+    list_arch = ["10", "50", "100", "10,5", "50,25", "100,50", "10,5,5", "50,25,10"]# , "100,50,25"]
 
     # Training Parameters
     max_epochs = 50000
@@ -98,7 +100,9 @@ def main():
 
     # Weight initialization
     WEIGHTS = 'random'
-    mu, sigma = 0, 0.01
+    mu, sigma, scale_weights = 0, 0.01, 1
+
+    test_mode = 'f'
 
 
     ##################
@@ -154,13 +158,20 @@ def main():
       if sys.argv[i].lower() == "-arch":
         arc = sys.argv[i+1]
       if sys.argv[i].lower() == "-s_weights":
-        save_weights = sys.argv[i+1]
+        save_weights = sys.argv[i+1].lower()
       if sys.argv[i].lower() == "-s_losses":
-        save_losses = sys.argv[i+1]
+        save_losses = sys.argv[i+1].lower()
       if sys.argv[i].lower() == "-s_yhat":
-        save_yhat = sys.argv[i+1]
+        save_yhat = sys.argv[i+1].lower()
       if sys.argv[i].lower() == "-gs_reps":
         gs_reps = int(sys.argv[i+1])
+      if sys.argv[i].lower() == "-scale_weights":
+        scale_weights = float(sys.argv[i+1])
+      if sys.argv[i].lower() == "-test_mode":
+        test_mode = sys.argv[i+1].lower()
+      if sys.argv[i].lower() == "-n":
+        n_reps = int(sys.argv[i+1])
+
 
     if len(sys.argv) <= 1:
         print(__doc__)
@@ -226,19 +237,20 @@ def main():
         gs_count = 0
         gs_length = len(list_dropout) * len(list_l2) * len(list_lrate) * len(list_actfun) * len(list_arch) * gs_reps
         for r in range(0,gs_reps):
-            print(range(0, gs_reps))
-            for dropout in list_dropout:
+            X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test = ANN.fun.train_valid_test_split(df, ho, y_name, val_perc)
+            for arc in list_arch:
+                archit, layer_number = ANN.fun.define_architecture(arc)
+                weights, biases = ANN.fun.initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma, scale_weights)
                 for l2 in list_l2:
                     for lrate in list_lrate:
                         for actfun in list_actfun:
-                            for arc in list_arch:
+                            for dropout in list_dropout:
                                 if gs_count % 10 == 0:
                                     print('Grid Search Status: %i out of %i' % (gs_count, gs_length))
                                 
                                 # Construct ANN model
-                                archit, layer_number = ANN.fun.define_architecture(arc)
-                                weights, biases = ANN.fun.initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma)
-                                pred = ANN.fun.multilayer_perceptron(x, weights, biases, layer_number, actfun, dropout, dropout_rate)
+                                
+                                pred = ANN.fun.multilayer_perceptron(x, weights, biases, layer_number, actfun, dropout)
                                 loss = ANN.fun.define_loss(loss_type, y, pred, l2, weights)
                                 optimizer = tf.train.AdamOptimizer(learning_rate=lrate).minimize(loss)
                                 correct_prediction = tf.equal(tf.argmax(pred, axis=1), tf.argmax(y, axis=1))
@@ -287,7 +299,11 @@ def main():
     ### Run final model 
     ################
 
+    print('####### Running Final Model(s) ###########')
+
     if FUNCTION == 'full' or FUNCTION == 'run':
+
+
         
         # Grab parameters from grid search results
         while run_again == 't':
@@ -323,98 +339,109 @@ def main():
             print('Learning rate: %f' % lrate)
             print('Activation Function: %s\n\n\n' % actfun)
 
+            for n in range(n_reps):
+                print("\nModel replicate: %i" % n)
+                X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test = ANN.fun.train_valid_test_split(df, ho, y_name, val_perc)
 
-            # Construct ANN model
-            archit, layer_number = ANN.fun.define_architecture(arc)
-            weights, biases = ANN.fun.initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma)
-            pred = ANN.fun.multilayer_perceptron(x, weights, biases, layer_number, actfun, dropout, dropout_rate)
-            loss = ANN.fun.define_loss(loss_type, y, pred, l2, weights)
-            optimizer = tf.train.AdamOptimizer(learning_rate=lrate).minimize(loss)
-            correct_prediction = tf.equal(tf.argmax(pred, axis=1), tf.argmax(y, axis=1))
-            accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+                # Construct ANN model
+                archit, layer_number = ANN.fun.define_architecture(arc)
+                weights, biases = ANN.fun.initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma, scale_weights, X_train, Y_train)
 
-            # Launch the graph
-            sess = tf.Session()
-            init = tf.global_variables_initializer()
-            sess.run(init)
-            tvars = tf.trainable_variables() # Define variables to hold weights
-            tvars_vals = sess.run(tvars)
+                pred = ANN.fun.multilayer_perceptron(x, weights, biases, layer_number, actfun, dropout)
+                loss = ANN.fun.define_loss(loss_type, y, pred, l2, weights)
+                optimizer = tf.train.AdamOptimizer(learning_rate=lrate).minimize(loss)
+                correct_prediction = tf.equal(tf.argmax(pred, axis=1), tf.argmax(y, axis=1))
+                accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
-            ## Train the ANN model ##
-            epoch_count = stop_count = 0
-            old_c = 1
-            train, losses = 'yes', []
+                # Launch the graph
+                sess = tf.Session()
+                init = tf.global_variables_initializer()
+                sess.run(init)
+                tvars = tf.trainable_variables() # Define variables to hold weights
+                tvars_vals = sess.run(tvars)
 
-            while train == 'yes':
-                epoch_count += 1
-                _, c = sess.run([optimizer, loss],feed_dict = {x:X_train, y:pd.DataFrame(Y_train), dropout_rate:dropout})
-                valid_c = sess.run(loss, feed_dict = {x:X_valid, y:pd.DataFrame(Y_valid), dropout_rate:1})
-                test_c = sess.run(loss, feed_dict={x: X_test, y:pd.DataFrame(Y_test), dropout_rate:1})
-                losses.append([epoch_count, c, valid_c, test_c])
-                
-                pchange = (old_c-valid_c)/old_c
-                if epoch_count >= burnin:
-                    if abs(pchange) < epoch_thresh:
-                        stop_count += 1
-                        print('Early stopping after %i more below threshold' % (10-stop_count))
-                        if stop_count >= 10:
-                            train='no'
+                ## Train the ANN model ##
+                epoch_count = stop_count = 0
+                old_c = 1
+                train, losses = 'yes', []
 
-                if (epoch_count) % 50 == 0:
-                    print("Epoch:", '%i' % (epoch_count), "; Training MSE=", "{:.3f}".format(c), "; Valid MSE=", "{:.3f}".format(valid_c), '; Percent change=', str(pchange))
-     
-                old_c = valid_c
-                if epoch_count == max_epochs or train=='no':
-                    print('Final MSE after %i epochs for training: %.5f, validation: %.5f, and testing: %.5f' % (epoch_count, c, valid_c, test_c))
-                    train = 'no'
+                while train == 'yes':
+                    epoch_count += 1
+                    _, c = sess.run([optimizer, loss],feed_dict = {x:X_train, y:pd.DataFrame(Y_train), dropout_rate:dropout})
+                    valid_c = sess.run(loss, feed_dict = {x:X_valid, y:pd.DataFrame(Y_valid), dropout_rate:1})
+                    test_c = sess.run(loss, feed_dict={x: X_test, y:pd.DataFrame(Y_test), dropout_rate:1})
+                    losses.append([epoch_count, c, valid_c, test_c])
+                    
+                    pchange = (old_c-valid_c)/old_c
+                    if epoch_count >= burnin:
+                        if abs(pchange) < epoch_thresh:
+                            stop_count += 1
+                            print('Early stopping after %i more below threshold' % (10-stop_count))
+                            if stop_count >= 10:
+                                train='no'
 
-            # Predict test set and add to yhat output
-            test_pred = sess.run(pred, feed_dict={x: X_test, dropout_rate:1})
-            valid_pred = sess.run(pred, feed_dict={x: X_valid, dropout_rate:1})
-            print('Snapshot of predicted Y values:')
-            print(test_pred[:,0][0:10])
-            ho_cor = np.corrcoef(Y_test, test_pred[:,0])
-            valid_cor = np.corrcoef(Y_valid, valid_pred[:,0])
-            print('Valid correlation coef (r): %.5f' % valid_cor[0,1])
-            print('Holdout correlation coef (r): %.5f' % ho_cor[0,1])
+                    if (epoch_count) % 10 == 0:
+                        print("Epoch:", '%i' % (epoch_count), "; Training MSE=", "{:.3f}".format(c), "; Valid MSE=", "{:.3f}".format(valid_c), '; Percent change=', str(pchange))
+         
+                    old_c = valid_c
+                    if epoch_count == max_epochs or train=='no':
+                        print('Final MSE after %i epochs for training: %.5f, validation: %.5f, and testing: %.5f' % (epoch_count, c, valid_c, test_c))
+                        train = 'no'
 
-            if rerun_na == 't':
-                if np.isnan(ho_cor[0,1]):
-                    rerun_count += 1
-                    if rerun_count <= 10:
-                        print('\n\n!!! Model predicted same y for all instances... repeating initalization & training...\n')
-                        run_again = 't'
+                # Predict test set and add to yhat output
+                test_pred = sess.run(pred, feed_dict={x: X_test, dropout_rate:1})
+                valid_pred = sess.run(pred, feed_dict={x: X_valid, dropout_rate:1})
+                print('Snapshot of predicted Y values:')
+                print(test_pred[:,0][0:10])
+                ho_cor = np.corrcoef(Y_test, test_pred[:,0])
+                valid_cor = np.corrcoef(Y_valid, valid_pred[:,0])
+                print('Valid correlation coef (r): %.5f' % valid_cor[0,1])
+                print('Holdout correlation coef (r): %.5f' % ho_cor[0,1])
+
+                if rerun_na == 't':
+                    if np.isnan(ho_cor[0,1]):
+                        rerun_count += 1
+                        if rerun_count <= 10:
+                            print('\n\n!!! Model predicted same y for all instances... repeating initalization & training...\n')
+                            run_again = 't'
+                        else:
+                            print('Did not converge on solution after 10 trys... Exiting...')
+                            quit()
+                    if valid_cor[0,1] <= 0:
+                        rerun_count += 1
+                        if rerun_count <= 10:
+                            print('\n\n!!! Model had negative correlation with validation set... repeat...\n')
+                            run_again = 't'
                     else:
-                        print('Did not converge on solution after 10 trys... Exiting...')
-                        quit()
+                        run_again = 'f'
 
 
 
 
-        ##### Optional Outputs ####
+                ##### Optional Outputs ####
 
-        if save_weights == 't':
-            ANN.fun.save_trained_weights(SAVE, tvars, tvars_vals, archit, feat_list)
+                if save_weights == 't':
+                    ANN.fun.save_trained_weights(SAVE, tvars, tvars_vals, archit, feat_list)
 
-        if save_losses == 't':
-            losses_df = pd.DataFrame(losses, columns=['epoch', 'MSE_train', 'MSE_valid', 'MSE_test'])        
-            losses_df.to_csv(SAVE+'_losses.csv', index=False)
+                if save_losses == 't':
+                    losses_df = pd.DataFrame(losses, columns=['epoch', 'MSE_train', 'MSE_valid', 'MSE_test'])        
+                    losses_df.to_csv(SAVE+'_losses.csv', index=False)
 
-        if save_yhat == 't':
-            pred_all = sess.run(pred, feed_dict={x:X, dropout_rate:1})
-            pred_all_res = pd.DataFrame({'Y': Y, 'Yhat': pred_all[:,0]})
-            pred_all_res.to_csv(SAVE+'_yhat.csv', index=False)
-        
-        run_time = timeit.default_timer() - start_time
-        if not os.path.isfile('RESULTS.txt'):
-            out1 = open('RESULTS.txt', 'w')
-            out1.write('DateTime\tRunTime\tTag\tDFs\tDFy\tTrait\tFeatSel\tWeights\tNumFeat\tHoldout\tNumHidLay\tArchit\tActFun\tEpochs\tdropout\tL2\tLearnRate\tMSE_Train\tMSE_Valid\tMSE_test\tPCC_test\n')
-            out1.close()
-             
-        out2 = open('RESULTS.txt', 'a')
-        out2.write('%s\t%0.5f\t%s\t%s\t%s\t%s\t%s\t%s\t%i\t%s\t%i\t%s\t%s\t%i\t%f\t%f\t%f\t%0.5f\t%0.5f\t%0.5f\t%0.5f\n' % (
-            timestamp, run_time, TAG, X_file, Y_file, y_name, FEAT, WEIGHTS, x.shape[1], ho, layer_number, str(arc), actfun, epoch_count, dropout, l2, lrate, c, valid_c, test_c, ho_cor[0,1]))
-        out2.close()
+                if save_yhat == 't':
+                    pred_all = sess.run(pred, feed_dict={x:X, dropout_rate:1})
+                    pred_all_res = pd.DataFrame({'y': Y, 'yhat': pred_all[:,0]})
+                    pred_all_res.to_csv(SAVE+'_yhat.csv', index=False)
+                
+                run_time = timeit.default_timer() - start_time
+                if not os.path.isfile('RESULTS.txt'):
+                    out1 = open('RESULTS.txt', 'w')
+                    out1.write('DateTime\tRunTime\tTag\tDFs\tDFy\tTrait\tFeatSel\tWeights\tNumFeat\tHoldout\tNumHidLay\tArchit\tActFun\tEpochs\tdropout\tL2\tLearnRate\tMSE_Train\tMSE_Valid\tMSE_test\tPCC_test\n')
+                    out1.close()
+                     
+                out2 = open('RESULTS.txt', 'a')
+                out2.write('%s\t%0.5f\t%s\t%s\t%s\t%s\t%s\t%s\t%i\t%s\t%i\t%s\t%s\t%i\t%f\t%f\t%f\t%0.5f\t%0.5f\t%0.5f\t%0.5f\n' % (
+                    timestamp, run_time, TAG, X_file, Y_file, y_name, FEAT, WEIGHTS, x.shape[1], ho, layer_number, str(arc), actfun, epoch_count, dropout, l2, lrate, c, valid_c, test_c, ho_cor[0,1]))
+                out2.close()
         print('\nfinished!')
 
 

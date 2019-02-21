@@ -46,7 +46,7 @@ class fun(object):
 
 	  return X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test
 
-	def initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma):
+	def initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma, scale_weights, X_train, Y_train):
 		"""
 		Initializes starting weights and biases, with weights determined by:
 			- random	Standard normal distribution 
@@ -56,19 +56,7 @@ class fun(object):
 		weights = {}
 		biases = {}
 
-		if WEIGHTS == 'xavier':
-			initializer = tf.contrib.layers.xavier_initializer()
-			weights['h1'] = tf.Variable(initializer([n_input, archit[0]]))
-			biases['b1'] = tf.Variable(tf.random_normal([archit[0]]))
-			for l in range(1,layer_number):
-				w_name = 'h' + str(l+1)
-				b_name = 'b' + str(l+1)
-				weights[w_name] = tf.Variable(initializer([archit[l-1], archit[l]]))
-				biases[b_name] = tf.Variable(tf.random_normal([archit[l]]))
-			weights['out'] = tf.Variable(initializer([archit[-1], n_classes]))
-			biases['out'] = tf.Variable(tf.random_normal([n_classes]))
-
-		elif WEIGHTS == 'random':
+		if WEIGHTS == 'random':
 			weights['h1'] = tf.Variable(tf.random_normal([n_input, archit[0]]))
 			biases['b1'] = tf.Variable(tf.random_normal([archit[0]]))
 			for l in range(1,layer_number):
@@ -78,19 +66,64 @@ class fun(object):
 				biases[b_name] = tf.Variable(tf.random_normal([archit[l]]))
 			weights['out'] = tf.Variable(tf.random_normal([archit[-1], n_classes]))
 			biases['out'] = tf.Variable(tf.random_normal([n_classes]))
+		
 		else:
-			print('Seeding starting weights using: %s + noise infusion (mu = %f, sigma= %f)' % (WEIGHTS, mu, sigma))
-			w_file = pd.read_csv(WEIGHTS, sep=',', index_col = None, header=0, names=['ID', 'weight'])
-			w_file = w_file[w_file['ID'].isin(list(df))] # Drop weights not included in x
-			w_file.ID = w_file.ID.astype('category') # Convert to category 
-			w_file.ID.cat.set_categories(list(df), inplace=True) # Set sorter for categories as X order
-			w_file = w_file.sort_values(['ID'])
-			weights = w_file['weight']
-			weight_df = pd.concat([weights]*archit[0], axis=1, ignore_index=True)
-			noise = np.random.normal(mu, sigma, [n_input, archit[0]])
-			weights_noise = weight_df + noise
-			weights_noise = weights_noise.astype(np.float32)
-			weights['h1'] = tf.Variable(weights_noise)
+			initializer = tf.contrib.layers.xavier_initializer()
+
+			if WEIGHTS == 'xavier':
+				weights['h1'] = tf.Variable(initializer([n_input, archit[0]]))
+
+			else: # If weights is a file with features and weights:
+				# Use Xavier weights for non-assigned nodes
+				xav_init = tf.Variable(initializer([n_input, archit[0]]))
+				init = tf.global_variables_initializer()
+				with tf.Session() as sess:
+					sess.run(init)
+					xav = sess.run(xav_init)
+				xav_mean = np.absolute(xav).mean().mean()
+				xav_sd = xav.std()
+				
+				if WEIGHTS.lower() == 'rf':
+					w_file = fun.Weights_RF(X_train, Y_train)
+				
+				elif WEIGHTS.lower() in ['rrblup', 'rrb']:
+					w_file = fun.Weights_rrBLUP(X_train, Y_train)
+
+				elif WEIGHTS.lower() in ['bl', 'bayesa', 'bayesb', 'brr']:
+					w_file = fun.Weights_BL(WEIGHTS, X_train, Y_train)
+
+				else:
+					# Read in input weights
+					w_file = pd.read_csv(WEIGHTS, sep=',', index_col = None, header=None, names=['ID', 'weight'])
+					w_file = w_file[w_file['ID'].isin(list(df))] # Drop weights not included in x
+					w_file.ID = w_file.ID.astype('category') # Convert to category 
+					w_file.ID.cat.set_categories(list(df), inplace=True) # Set sorter for categories as X order
+					w_file = w_file.sort_values(['ID'])
+				w_mean = w_file['weight'].abs().mean().mean()
+
+				# Scale input weights so that mean matches Xavier weights mean & add noise
+				scale_by = xav_mean / w_mean
+				print('Scaling input weights by: %.5f, with noise sd: %.5f' % (scale_by, xav_sd))
+				weight_df = pd.concat([w_file['weight']]*archit[0], axis=1, ignore_index=True)
+				noise = np.random.normal(mu, xav_sd*2, [n_input, archit[0]])
+				weights_noise = (weight_df * scale_by) + noise
+				weights_noise = weights_noise.astype(np.float32)
+				
+				# Set 90% of nodes to be from Xavier and 10% from input weights
+				per90 = int(archit[0]*0.75)
+				weights_noise.iloc[:,0:per90] = xav[:,0:per90]
+				weights['h1'] = tf.Variable(weights_noise)
+			
+			
+			biases['b1'] = tf.Variable(tf.random_normal([archit[0]]))
+			for l in range(1,layer_number):
+				w_name = 'h' + str(l+1)
+				b_name = 'b' + str(l+1)
+				weights[w_name] = tf.Variable(initializer([archit[l-1], archit[l]]))
+				biases[b_name] = tf.Variable(tf.random_normal([archit[l]]))
+			weights['out'] = tf.Variable(tf.random_normal([archit[-1], n_classes]))
+			biases['out'] = tf.Variable(tf.random_normal([n_classes]))
+
 
 		return weights, biases
 
@@ -124,7 +157,7 @@ class fun(object):
 
 		return loss
 
-	def multilayer_perceptron(x, weights, biases, layer_number, activation_function, dropout, dropout_rate):
+	def multilayer_perceptron(x, weights, biases, layer_number, activation_function, dropout):
 		"""
 		Generate MLP model of any shape with options for activation function type and dropout levels
 		currently: sigmoid, relu, elu
@@ -246,7 +279,7 @@ class fun(object):
 		from PIL import Image
 
 		if os.path.isfile(X_file + 'X_processed.csv'):
-			print('Pulling already processed image data from %s/X_processed.csv' % X_file)
+			print('Pulling already processed image data from %sX_processed.csv' % X_file)
 			x = pd.read_csv(X_file + 'X_processed.csv' , sep=',', index_col = 0)
 
 		else:
@@ -273,3 +306,74 @@ class fun(object):
 		print(x.shape)
 		return x 
 
+	def Weights_RF(X_train, Y_train):
+		""" Run Random Forest to get coefficients to use as starting weights """
+		from sklearn.ensemble import RandomForestRegressor
+		from math import sqrt
+		print('Calculating seeded starting weights using RF')
+		feat_sel_forest = RandomForestRegressor(max_features= round(sqrt(X_train.shape[1])), n_estimators=500, n_jobs=1)
+		feat_sel_forest = feat_sel_forest.fit(X_train, Y_train)
+		w_file = pd.DataFrame(data=feat_sel_forest.feature_importances_, columns=['weight'])
+		return(w_file)
+
+	def Weights_rrBLUP(X_train, Y_train):
+		""" Run rrBLUP to get coefficients to use as starting weights """
+		from random import randint
+		cwd = os.getcwd()
+		tmp = str(randint(1000000, 9999999))
+		np.savetxt('x_file_'+ tmp, X_train, delimiter=',')
+		np.savetxt('y_file_'+ tmp, Y_train, delimiter=',')
+
+		# Write temp Rscript  
+		tmpR=open("rrB_%s.R" % tmp,"w")
+		tmpR.write("setwd('%s')\n" % cwd)
+		tmpR.write('library(rrBLUP)\n')
+		tmpR.write('library(data.table)\n')
+		tmpR.write("X <- fread('%s', sep=',', header=F)\n" % ('x_file_'+ tmp))
+		tmpR.write("Y <- fread('%s', sep=',', header=F)\n" % ('y_file_'+ tmp))
+		tmpR.write("mod <- mixed.solve(Y$V1, Z=X, K=NULL, SE=FALSE, return.Hinv=FALSE)\n")
+		tmpR.write("weight <- mod$u\n")
+		tmpR.write("weight_df <- as.data.frame(weight)\n")
+		tmpR.write("write.table(weight_df, file='%s', sep=',', row.names=TRUE, quote=FALSE)\n" % ('rrBScores_'+tmp+'.txt'))
+		tmpR.close()
+
+		print('Running rrBLUP using mixed.solve in R.')
+		os.system('module load R')
+		os.system('export R_LIBS_USER=/mnt/home/azodichr/R/library')
+		os.system("R CMD BATCH rrB_%s.R" % tmp)
+
+		w_file = pd.read_csv('rrBScores_'+tmp+'.txt', sep = ',')
+		os.system("rm rrBScores_%s.txt rrB_%s.R rrB_%s.Rout x_file_%s y_file_%s" % (tmp, tmp, tmp, tmp, tmp))
+		return(w_file)
+
+
+	def Weights_BGLR(WEIGHTS, X_train, Y_train):
+		""" Run BL, BayesA, BayesB, or BRR using the BGLR package implemented in R to get seeded starting weights """
+		from random import randint
+		cwd = os.getcwd()
+		tmp = str(randint(1000000, 9999999))
+		np.savetxt('x_file_'+ tmp, X_train, delimiter=',')
+		np.savetxt('y_file_'+ tmp, Y_train, delimiter=',')
+
+		# Write temp Rscript  
+		tmpR=open("BGLR_%s.R" % tmp,"w")
+		tmpR.write("setwd('%s')\n" % cwd)
+		tmpR.write('library(BGLR)\n')
+		tmpR.write('library(data.table)\n')
+		tmpR.write("X <- fread('%s', sep=',', header=F)\n" % ('x_file_'+ tmp))
+		tmpR.write("Y <- fread('%s', sep=',', header=F)\n" % ('y_file_'+ tmp))
+		tmpR.write("ETA=list(list(X=X,model='%s'))\n" % WEIGHTS)
+		tmpR.write("fm=BGLR(y=Y$V1,ETA=ETA,verbose=FALSE, nIter=12000,burnIn=2000)\n")
+		tmpR.write("weight <- fm$ETA[[1]]$b\n")
+		tmpR.write("weight_df <- as.data.frame(weight)\n")
+		tmpR.write("write.table(weight_df, file='%s', sep=',', row.names=TRUE, quote=FALSE)\n" % ('BGLRScores_'+tmp+'.txt'))
+		tmpR.close()
+
+		print('Running %s model from BGLR implemented in R.' % WEIGHTS)
+		os.system('module load R')
+		os.system('export R_LIBS_USER=/mnt/home/azodichr/R/library')
+		os.system("R CMD BATCH BGLR_%s.R" % tmp)
+
+		w_file = pd.read_csv('BGLRScores_'+tmp+'.txt', sep = ',')
+		os.system("rm BGLRScores_%s.txt BGLR_%s.R BGLR_%s.Rout x_file_%s y_file_%s" % (tmp, tmp, tmp, tmp, tmp))
+		return(w_file)
