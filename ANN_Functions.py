@@ -1,10 +1,9 @@
-
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import sys, os
+import subprocess as sp
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -46,7 +45,7 @@ class fun(object):
 
 	  return X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test
 
-	def initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma, scale_weights, X_train, Y_train):
+	def initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma, X_train, Y_train):
 		"""
 		Initializes starting weights and biases, with weights determined by:
 			- random	Standard normal distribution 
@@ -90,7 +89,7 @@ class fun(object):
 					w_file = fun.Weights_rrBLUP(X_train, Y_train)
 
 				elif WEIGHTS.lower() in ['bl', 'bayesa', 'bayesb', 'brr']:
-					w_file = fun.Weights_BL(WEIGHTS, X_train, Y_train)
+					w_file = fun.Weights_BGLR(WEIGHTS, X_train, Y_train)
 
 				else:
 					# Read in input weights
@@ -337,13 +336,11 @@ class fun(object):
 		tmpR.write("write.table(weight_df, file='%s', sep=',', row.names=TRUE, quote=FALSE)\n" % ('rrBScores_'+tmp+'.txt'))
 		tmpR.close()
 
-		print('Running rrBLUP using mixed.solve in R.')
-		os.system('module load R')
-		os.system('export R_LIBS_USER=/mnt/home/azodichr/R/library')
-		os.system("R CMD BATCH rrB_%s.R" % tmp)
-
+		process = sp.Popen('module load R && export R_LIBS_USER=/mnt/home/azodichr/R/library && Rscript rrB_%s.R' % tmp, shell=True)
+		process.wait()
 		w_file = pd.read_csv('rrBScores_'+tmp+'.txt', sep = ',')
-		os.system("rm rrBScores_%s.txt rrB_%s.R rrB_%s.Rout x_file_%s y_file_%s" % (tmp, tmp, tmp, tmp, tmp))
+		os.system("rm rrBScores_%s.txt rrB_%s.R x_file_%s y_file_%s" % (tmp, tmp, tmp, tmp))
+		
 		return(w_file)
 
 
@@ -369,11 +366,12 @@ class fun(object):
 		tmpR.write("write.table(weight_df, file='%s', sep=',', row.names=TRUE, quote=FALSE)\n" % ('BGLRScores_'+tmp+'.txt'))
 		tmpR.close()
 
-		print('Running %s model from BGLR implemented in R.' % WEIGHTS)
-		os.system('module load R')
-		os.system('export R_LIBS_USER=/mnt/home/azodichr/R/library')
-		os.system("R CMD BATCH BGLR_%s.R" % tmp)
-
+		process = sp.Popen('module load R && export R_LIBS_USER=/mnt/home/azodichr/R/library && Rscript BGLR_%s.R' % tmp, shell=True)
+		process.wait()
 		w_file = pd.read_csv('BGLRScores_'+tmp+'.txt', sep = ',')
-		os.system("rm BGLRScores_%s.txt BGLR_%s.R BGLR_%s.Rout x_file_%s y_file_%s" % (tmp, tmp, tmp, tmp, tmp))
+		os.system("rm BGLRScores_%s.txt BGLR_%s.R x_file_%s y_file_%s" % (tmp, tmp, tmp, tmp))
+		
 		return(w_file)
+
+
+

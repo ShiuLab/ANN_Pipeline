@@ -1,188 +1,88 @@
-"""
-PURPOSE:
-Build Multilayer Perceptron Artificial Neural Networks implemented in TensorFlow (TF)
-
-INPUT:
-    REQUIRED:
-    -x          File with feature information
-    -y          File with values you want to predict 
-    -y_name     Name of column in y with the value you want to predict (Default = Y)
-    -ho         File with holdout set
-    -save       Name to include in RESULTS file (i.e. what dataset are you running)
-    
-    OPTIONAL:
-    # Input/Output Functions
-        -f          Select function to perform (gs, run, full*) *Default
-        -feat       File with list of features from -x to include
-        -norm       T/F Normalize Y (default = T)
-        -tag        Identifier string to add to RESULTS file
-        -sep        Specify seperator in -x and -y (Default = '\t')
-        -s_weights  T/F Save the trained weights from the trained network (only if hidden layers <= 3)
-        -s_losses   T/F Save the training, validation, and testing losses from final model training
-        -s_yhat     T/F Apply trained model to all data and save output 
-
-    # Specify hyperparameters (only if -f run)
-        -params    Output from -f gs (i.e. SAVE_GridSearch.txt)
-        -actfun     Activation function. (relu, sigmoid*) *Default
-        -lrate      Learning rate. Default = 0.01
-        -dropout    Dropout rate. Default = 0.1 (i.e. drop out 10% of nodes each epoch)
-        -l2         Shrinkage parameter for L2 regularization. Default = 0
-        -arch       MLP architecture as comma separated layer sizes (e.g. 100,50 or 200,100,50)
-    
-    # Training behavior 
-        -max_epoch     Max number of epochs to iterate through. Default = 50,000
-        -epoch_thresh  Threshold for percent change in MSE for early stopping. Default = 0.001
-        -burnin        Number of epochs before start counting for early stopping. Default = 100
-        -val_perc      What percent of the training set to hold back for validation. Default = 0.1
-        -loss_type     Loss function to minimize during training. Only MSE available now. Default = mse
-
-OUTPUT:
-    -SAVE_GridSearch.txt    Results from grid search. Appends to SAVE_GridSearch.txt if already exists
-    -RESULTS.txt            Summary of results from final model (from -f run/full)
-    -SAVE_losses.csv        Training, validation, and testing losses for each epoch in final model (-s_losses t)
-    -SAVE_Weights_X.csv     Final trained ANN weights for hidden layers (_HL#) and final connection (_fin)
-    
-
-EXAMPLE ON HPCC:
-$ source /mnt/home/azodichr/python3-tfcpu/bin/activate
-$ python ANN_mlp.py -f full -x geno.csv -y pheno.csv -y_name HT -sep ',' -ho holdout.txt -save mlp_HT -gs t -gs_reps 10 -weights xavier -norm t
-
-"""
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import sys, os
+import sys, os, argparse, timeit
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 from datetime import datetime
-import timeit
 import ANN_Functions as ANN
 
 start_time = timeit.default_timer()
 timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 def main():
-
-    #####################
-    ### Default Input ###
-    #####################
     print('Running ANN_MLP pipeline...')
-    FUNCTION = 'full'
+
+    ########################
+    ### Parse Input Args ###
+    ########################
+
+    parser = argparse.ArgumentParser(description='Build Multilayer Perceptron Artificial Neural Networks implemented in TensorFlow (TF)')
     
-    # Input and Output info
-    SEP, TAG, FEAT, SAVE, y_name, norm = '\t', '', '', 'test', 'Y', 't'
-    save_weights = save_losses = save_yhat = 'f'
-    n_reps = 100
+    # Input arguments
+    parser.add_argument('-FUNCTION', '-f', help='Select function to perform (gs, run, full)', default='full')
+    parser.add_argument('-X_file', '-x', help='Features file', required=True)
+    parser.add_argument('-Y_file', '-y', help='Value to predict file', required=True)
+    parser.add_argument('-SEP', '-sep', help='Deliminator', default='\t')
+    parser.add_argument('-y_name', help='Name of column in Y_file to predict', default='Y')
+    parser.add_argument('-norm', help='T/F to normalize Y values', default='t')
+    parser.add_argument('-ho', help='File with testing (i.e. holdout) lines', required=True)
+    parser.add_argument('-FEAT', '-feat', help='File with list of features (from x) to include', default='')
 
-    # Hyperparameters
-    actfun, arc, lrate, dropout, l2 = 'sigmoid', '10,5', 0.01, 0.1, 0.0
-    params = ''
+    # Output arguments
+    parser.add_argument('-save', help='prefix for output files', default='output')
+    parser.add_argument('-TAG', '-tag', help='Identifier string to add to RESULTS output line', default='')
+    parser.add_argument('-out_loc', help='Path to where output files are saved. Default to cwd.', default='')
+    parser.add_argument('-save_weights', '-s_weights', help='T/F Save the trained weights from the trained network (only if hidden layers <= 3)', default='f')
+    parser.add_argument('-save_losses', '-s_losses', help='T/F Save the training, validation, and testing losses from final model training', default='f')
+    parser.add_argument('-save_yhat', '-s_yhat', help='T/F Apply trained model to all data and save output', default='f')
 
-    # Grid Search Hyperparameter Space
-    gs_reps = 10
-    list_dropout = [0.1, 0.5]
-    list_l2 = [0.0, 0.1, 0.5]
-    list_lrate = [0.01, 0.001]
-    list_actfun = ["sigmoid", "relu"]
-    list_arch = ["10", "50", "100", "10,5", "50,25", "100,50", "10,5,5", "50,25,10"]# , "100,50,25"]
+    # Default Hyperparameters
+    parser.add_argument('-params', help='Output from -f gs (i.e. SAVE_GridSearch.txt)', default='')
+    parser.add_argument('-actfun', help='Activation function. (relu, sigmoid)', default='sigmoid')
+    parser.add_argument('-lrate', help='Learning Rate', default=0.01, type=float)
+    parser.add_argument('-dropout', help='Dropout rate', default=0.1, type=float)
+    parser.add_argument('-l2', help='Shrinkage parameter for L2 regularization', default=0.0, type=float)
+    parser.add_argument('-arc', help='MLP architecture as comma separated layer sizes (e.g. 100,50 or 200,100,50)', default='10,5')
 
-    # Training Parameters
-    max_epochs = 50000
-    epoch_thresh = 0.01
-    burnin = 10
-    loss_type = 'mse'
-    val_perc = 0.1 
+    # Grid Search reps/space
+    parser.add_argument('-gs_reps', '-gs_n', help='Number of Grid Search Reps (will append results if SAVE_GridSearch.csv exists)', type=int, default=10)
+    parser.add_argument('-actfun_gs', help='Activation functions for Grid Search', nargs='*', type=str, default=["sigmoid", "relu"])
+    parser.add_argument('-dropout_gs', help='Dropout rates for Grid Search', nargs='*', type=float, default=[0.1, 0.5])
+    parser.add_argument('-l2_gs', help='Shrinkage parameters for L2 for Grid Search', nargs='*', type=float, default=[0.0, 0.1, 0.5])
+    parser.add_argument('-lrate_gs', help='Shrinkage parameters for L2 for Grid Search', nargs='*', type=float, default=[0.01, 0.001])
+    parser.add_argument('-arc_gs', help='Architectures for Grid Search', nargs='*', type=str, default=["10", "50", "100", "10,5", "50,25", "100,50", "10,5,5", "50,25,10"])
+   
+    # Training behavior 
+    parser.add_argument('-n_reps', '-n', help='Number of replicates (unique validation set/starting weights for each)', default=100, type=int)
+    parser.add_argument('-burnin', help='Number of epochs before start counting for early stopping', default=100, type=int)
+    parser.add_argument('-epoch_thresh', help='Threshold for percent change in MSE for early stopping', default='0.001', type=float)
+    parser.add_argument('-max_epochs', help='Max number of epochs to iterate through', default=50000, type=int)
+    parser.add_argument('-val_perc', help='Percent of the training set to use for validation', default=0.1, type=float)
+    parser.add_argument('-loss_type', help='Loss function to minimize during training. Only MSE available now', default='mse', type=str)
+    parser.add_argument('-WEIGHTS', '-weights', help='Approach for starting weights (random, xavier, RF, rrB, BayesA, BayesB, BL, BRR)', default='xavier', type=str)
+    parser.add_argument('-weight_mu', '-mu', help='Mean of noise to add to starting weights (not for random/xavier)', default=0.0, type=float)
+    parser.add_argument('-weight_sigma', '-sigma', help='Stdev of noise to add to starting weights (not for random/xavier)', default=0.01, type=float)
+
     run_again = rerun_na = 't'
     rerun_count = 0
 
-    # Weight initialization
-    WEIGHTS = 'random'
-    mu, sigma, scale_weights = 0, 0.01, 1
+    args = parser.parse_args()
 
-    test_mode = 'f'
-
-
-    ##################
-    ### User Input ###
-    ##################
-    for i in range (1,len(sys.argv),2):
-      if sys.argv[i].lower() == "-f":
-        FUNCTION = sys.argv[i+1]
-      if sys.argv[i].lower() == "-x":
-        X_file = sys.argv[i+1]
-      if sys.argv[i].lower() == "-y":
-        Y_file = sys.argv[i+1]
-      if sys.argv[i].lower() == '-ho':
-        ho = sys.argv[i+1]
-      if sys.argv[i].lower() == '-val_perc':
-        val_perc = float(sys.argv[i+1])
-      if sys.argv[i].lower() == '-sep':
-        SEP = sys.argv[i+1]
-      if sys.argv[i].lower() == '-norm':
-        norm = sys.argv[i+1]
-      if sys.argv[i].lower() == "-feat":
-        FEAT = sys.argv[i+1]
-      if sys.argv[i].lower() == "-weights":
-        WEIGHTS = sys.argv[i+1]
-      if sys.argv[i].lower() == "-mu":
-        mu = float(sys.argv[i+1])
-      if sys.argv[i].lower() == "-sigma":
-        sigma = float(sys.argv[i+1])
-      if sys.argv[i].lower() == "-tag":
-        TAG = sys.argv[i+1]
-      if sys.argv[i].lower() == "-y_name":
-        y_name = sys.argv[i+1]
-      if sys.argv[i].lower() == "-save":
-        SAVE = sys.argv[i+1]
-      if sys.argv[i].lower() == "-actfun":
-        actfun = sys.argv[i+1] 
-      if sys.argv[i].lower() == "-epoch_thresh":
-        epoch_thresh = float(sys.argv[i+1])
-      if sys.argv[i].lower() == "-epoch_max":
-        epoch_thresh = int(sys.argv[i+1])
-      if sys.argv[i].lower() == "-loss_type":
-        loss_type = sys.argv[i+1]        
-      if sys.argv[i].lower() == "-params":
-        params = sys.argv[i+1]
-      if sys.argv[i].lower() == "-burnin":
-        burnin = int(sys.argv[i+1])
-      if sys.argv[i].lower() == "-lrate":
-        lrate = float(sys.argv[i+1])
-      if sys.argv[i].lower() == "-l2":
-        l2 = float(sys.argv[i+1])
-      if sys.argv[i].lower() == "-dropout":
-        dropout = float(sys.argv[i+1])
-      if sys.argv[i].lower() == "-arch":
-        arc = sys.argv[i+1]
-      if sys.argv[i].lower() == "-s_weights":
-        save_weights = sys.argv[i+1].lower()
-      if sys.argv[i].lower() == "-s_losses":
-        save_losses = sys.argv[i+1].lower()
-      if sys.argv[i].lower() == "-s_yhat":
-        save_yhat = sys.argv[i+1].lower()
-      if sys.argv[i].lower() == "-gs_reps":
-        gs_reps = int(sys.argv[i+1])
-      if sys.argv[i].lower() == "-scale_weights":
-        scale_weights = float(sys.argv[i+1])
-      if sys.argv[i].lower() == "-test_mode":
-        test_mode = sys.argv[i+1].lower()
-      if sys.argv[i].lower() == "-n":
-        n_reps = int(sys.argv[i+1])
+    if args.out_loc != '':
+        args.save = args.out_loc + '/' + args.save
 
 
-    if len(sys.argv) <= 1:
-        print(__doc__)
-        exit()
+
 
     ################
     ### Features: read in file, keep only those in FEAT if given, and define feature_cols for DNNReg.
     ################
-    x = pd.read_csv(X_file, sep=SEP, index_col = 0)
-    if FEAT != '':
-        with open(FEAT) as f:
+    x = pd.read_csv(args.X_file, sep=args.SEP, index_col = 0)
+    if args.FEAT != '':
+        with open(args.FEAT) as f:
             features = f.read().strip().splitlines()
         x = x.loc[:,features]
     feat_list = list(x.columns)
@@ -194,18 +94,18 @@ def main():
     ################
     ### Y: read in file, keep only column to predict, normalize if needed, and merge with features
     ################
-    y = pd.read_csv(Y_file, sep=SEP, index_col = 0)
-    if y_name != 'pass':
-        print('Building model to predict: %s' % str(y_name))
-        y = y[[y_name]]
-    if norm == 't':
+    y = pd.read_csv(args.Y_file, sep=args.SEP, index_col = 0)
+    if args.y_name != 'pass':
+        print('Building model to predict: %s' % str(args.y_name))
+        y = y[[args.y_name]]
+    if args.norm == 't':
         print('Normalizing Y...')
         mean = y.mean(axis=0)
         std = y.std(axis=0)
         y = (y - mean) / std
 
     df = pd.merge(y, x, left_index=True, right_index=True)
-    yhat = df[y_name]
+    yhat = df[args.y_name]
 
     print('\nSnapshot of data being used:')
     print(df.head())
@@ -215,7 +115,7 @@ def main():
     ################
     print('Removing holdout instances to apply model on later...')
 
-    X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test = ANN.fun.train_valid_test_split(df, ho, y_name, val_perc)
+    X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test = ANN.fun.train_valid_test_split(df, args.ho, args.y_name, args.val_perc)
     
     n_input = X_train.shape[1]
     n_samples = X_train.shape[0]
@@ -231,27 +131,27 @@ def main():
     ### Grid Search: Using train:validate splits
     ################
 
-    if FUNCTION == 'gs' or FUNCTION == 'full':
+    if args.FUNCTION in ['gs', 'full', 'both']:
         print('Starting Grid Search...')
         gs_results = pd.DataFrame()
         gs_count = 0
-        gs_length = len(list_dropout) * len(list_l2) * len(list_lrate) * len(list_actfun) * len(list_arch) * gs_reps
-        for r in range(0,gs_reps):
-            X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test = ANN.fun.train_valid_test_split(df, ho, y_name, val_perc)
-            for arc in list_arch:
+        gs_length = len(args.dropout_gs) * len(args.l2_gs) * len(args.lrate_gs) * len(args.actfun_gs) * len(args.arc_gs) * args.gs_reps
+        for r in range(0,args.gs_reps):
+            X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test = ANN.fun.train_valid_test_split(df, args.ho, args.y_name, args.val_perc)
+            for arc in args.arc_gs:
                 archit, layer_number = ANN.fun.define_architecture(arc)
-                weights, biases = ANN.fun.initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma, scale_weights)
-                for l2 in list_l2:
-                    for lrate in list_lrate:
-                        for actfun in list_actfun:
-                            for dropout in list_dropout:
+                weights, biases = ANN.fun.initialize_starting_weights(args.WEIGHTS, n_input, n_classes, archit, layer_number, df, args.weight_mu, args.weight_sigma, X_train, Y_train)
+                for l2 in args.l2_gs:
+                    for lrate in args.lrate_gs:
+                        for actfun in args.actfun_gs:
+                            for dropout in args.dropout_gs:
                                 if gs_count % 10 == 0:
                                     print('Grid Search Status: %i out of %i' % (gs_count, gs_length))
                                 
                                 # Construct ANN model
                                 
                                 pred = ANN.fun.multilayer_perceptron(x, weights, biases, layer_number, actfun, dropout)
-                                loss = ANN.fun.define_loss(loss_type, y, pred, l2, weights)
+                                loss = ANN.fun.define_loss(args.loss_type, y, pred, l2, weights)
                                 optimizer = tf.train.AdamOptimizer(learning_rate=lrate).minimize(loss)
                                 correct_prediction = tf.equal(tf.argmax(pred, axis=1), tf.argmax(y, axis=1))
                                 accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
@@ -271,14 +171,14 @@ def main():
                                     _, c = sess.run([optimizer, loss],feed_dict = {x:X_train, y:pd.DataFrame(Y_train), dropout_rate:dropout})
                                     valid_c = sess.run(loss, feed_dict = {x:X_valid, y:pd.DataFrame(Y_valid), dropout_rate:1})
                                     
-                                    if epoch_count >= burnin:
+                                    if epoch_count >= args.burnin:
                                         pchange = (old_c-valid_c)/old_c
-                                        if abs(pchange) < epoch_thresh:
+                                        if abs(pchange) < args.epoch_thresh:
                                             stop_count += 1
                                             if stop_count >= 10:
                                                 train='no'
                                     old_c = valid_c
-                                    if epoch_count == max_epochs:
+                                    if epoch_count == args.max_epochs:
                                         train='no'
 
                                 valid_pred = sess.run(pred, feed_dict = {x:X_valid, y:pd.DataFrame(Y_valid), dropout_rate:1})
@@ -286,12 +186,12 @@ def main():
                                 gs_results = gs_results.append({'ActFun':actfun, 'Arch':arc, 'dropout':dropout, 'L2':l2, 'LearnRate':lrate,'Epochs':epoch_count, 'Train_Loss':c, 'Valid_Loss':valid_c, 'Valid_PCC':val_cor[0,1]}, ignore_index=True)
                                 gs_count += 1
             
-        if not os.path.isfile(SAVE + "_GridSearch.txt"):
-            gs_results.to_csv(SAVE + "_GridSearch.txt", header='column_names', sep='\t')
+        if not os.path.isfile(args.save + "_GridSearch.txt"):
+            gs_results.to_csv(args.save + "_GridSearch.txt", header='column_names', sep='\t')
         else: 
-            gs_results.to_csv(SAVE + "_GridSearch.txt", mode='a', header=False, sep='\t')
+            gs_results.to_csv(args.save + "_GridSearch.txt", mode='a', header=False, sep='\t')
 
-        print('\n\n Grid Search results saved to: %s_GridSearch.txt\n' % SAVE)
+        print('\n\n Grid Search results saved to: %s_GridSearch.txt\n' % args.save)
 
 
     
@@ -301,22 +201,23 @@ def main():
 
     print('####### Running Final Model(s) ###########')
 
-    if FUNCTION == 'full' or FUNCTION == 'run':
+    if args.FUNCTION in ['full','both','run']:
 
 
         
         # Grab parameters from grid search results
         while run_again == 't':
             
-            if FUNCTION == 'full' or params != '': # Else use default or individually defined parameters
+            if args.FUNCTION in ['full', 'both'] or args.params != '': # Else use default or individually defined parameters
                 run_again = 'f'
 
-                if FUNCTION == 'full':
+                if args.FUNCTION in ['full', 'both']:
                     gs_res = gs_results
                 
-                if params != '':
-                    gs_res = pd.read_csv(params, sep='\t')
-                
+                elif args.params != '':
+                    gs_res = pd.read_csv(args.params, sep='\t')
+
+
                 gs_res.fillna(0, inplace=True)
                 gs_ave = gs_res.groupby(['ActFun','dropout','L2','Arch','LearnRate']).agg({
                     'Valid_Loss': 'median', 'Train_Loss': 'median', 'Valid_PCC': 'median', 'Epochs': 'mean'}).reset_index()
@@ -332,6 +233,13 @@ def main():
                 lrate = float(results_sorted['LRate'].iloc[0])
                 arc = results_sorted['Arch'].iloc[0]
 
+            elif args.FUNCTION == 'run' and args.params == '':
+                actfun = args.actfun
+                dropout = args.dropout
+                l2 = args.l2
+                lrate = args.lrate
+                arc = args.arc
+
 
             print("\n\n##########\nBuilding MLP with the following parameters:\n")
             print('Architecture: %s' % arc)
@@ -339,16 +247,17 @@ def main():
             print('Learning rate: %f' % lrate)
             print('Activation Function: %s\n\n\n' % actfun)
 
-            for n in range(n_reps):
+            yhats_reps = df[args.y_name]
+            for n in range(args.n_reps):
                 print("\nModel replicate: %i" % n)
-                X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test = ANN.fun.train_valid_test_split(df, ho, y_name, val_perc)
+                X, Y, X_train, X_valid, X_test, Y_train, Y_valid, Y_test = ANN.fun.train_valid_test_split(df, args.ho, args.y_name, args.val_perc)
 
                 # Construct ANN model
                 archit, layer_number = ANN.fun.define_architecture(arc)
-                weights, biases = ANN.fun.initialize_starting_weights(WEIGHTS, n_input, n_classes, archit, layer_number, df, mu, sigma, scale_weights, X_train, Y_train)
+                weights, biases = ANN.fun.initialize_starting_weights(args.WEIGHTS, n_input, n_classes, archit, layer_number, df, args.weight_mu, args.weight_sigma, X_train, Y_train)
 
                 pred = ANN.fun.multilayer_perceptron(x, weights, biases, layer_number, actfun, dropout)
-                loss = ANN.fun.define_loss(loss_type, y, pred, l2, weights)
+                loss = ANN.fun.define_loss(args.loss_type, y, pred, l2, weights)
                 optimizer = tf.train.AdamOptimizer(learning_rate=lrate).minimize(loss)
                 correct_prediction = tf.equal(tf.argmax(pred, axis=1), tf.argmax(y, axis=1))
                 accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
@@ -373,8 +282,8 @@ def main():
                     losses.append([epoch_count, c, valid_c, test_c])
                     
                     pchange = (old_c-valid_c)/old_c
-                    if epoch_count >= burnin:
-                        if abs(pchange) < epoch_thresh:
+                    if epoch_count >= args.burnin:
+                        if abs(pchange) < args.epoch_thresh:
                             stop_count += 1
                             print('Early stopping after %i more below threshold' % (10-stop_count))
                             if stop_count >= 10:
@@ -384,7 +293,7 @@ def main():
                         print("Epoch:", '%i' % (epoch_count), "; Training MSE=", "{:.3f}".format(c), "; Valid MSE=", "{:.3f}".format(valid_c), '; Percent change=', str(pchange))
          
                     old_c = valid_c
-                    if epoch_count == max_epochs or train=='no':
+                    if epoch_count == args.max_epochs or train=='no':
                         print('Final MSE after %i epochs for training: %.5f, validation: %.5f, and testing: %.5f' % (epoch_count, c, valid_c, test_c))
                         train = 'no'
 
@@ -420,17 +329,22 @@ def main():
 
                 ##### Optional Outputs ####
 
-                if save_weights == 't':
-                    ANN.fun.save_trained_weights(SAVE, tvars, tvars_vals, archit, feat_list)
+                if args.save_weights == 't':
+                    ANN.fun.save_trained_weights(args.save, tvars, tvars_vals, archit, feat_list)
+                    if args.n_reps > 1:
+                        print("SAVING WEIGHTS - NOTE: DOES NOT AVERAGE OVER N_REPS - WILL OVERRIGHT! FIX LATER!?!?")
 
-                if save_losses == 't':
+                if args.save_losses == 't':
                     losses_df = pd.DataFrame(losses, columns=['epoch', 'MSE_train', 'MSE_valid', 'MSE_test'])        
-                    losses_df.to_csv(SAVE+'_losses.csv', index=False)
+                    losses_df.to_csv(args.save+'_losses.csv', index=False)
+                    if args.n_reps > 1:
+                        print("SAVING LOSSES - NOTE: DOES NOT AVERAGE OVER N_REPS - WILL OVERRIGHT AND REPORT LAST REP")
 
-                if save_yhat == 't':
-                    pred_all = sess.run(pred, feed_dict={x:X, dropout_rate:1})
-                    pred_all_res = pd.DataFrame({'y': Y, 'yhat': pred_all[:,0]})
-                    pred_all_res.to_csv(SAVE+'_yhat.csv', index=False)
+                if args.save_yhat == 't':
+                    tmp_yhat = sess.run(pred, feed_dict={x:X, dropout_rate:1})
+                    rep_name = 'yhat_' + str(int(n) + 1)
+                    tmp_yhat_df = pd.DataFrame(data=tmp_yhat[:,0], index=df.index, columns = [rep_name])
+                    yhats_reps = pd.concat([yhats_reps,tmp_yhat_df], axis = 1)
                 
                 run_time = timeit.default_timer() - start_time
                 if not os.path.isfile('RESULTS.txt'):
@@ -440,8 +354,17 @@ def main():
                      
                 out2 = open('RESULTS.txt', 'a')
                 out2.write('%s\t%0.5f\t%s\t%s\t%s\t%s\t%s\t%s\t%i\t%s\t%i\t%s\t%s\t%i\t%f\t%f\t%f\t%0.5f\t%0.5f\t%0.5f\t%0.5f\n' % (
-                    timestamp, run_time, TAG, X_file, Y_file, y_name, FEAT, WEIGHTS, x.shape[1], ho, layer_number, str(arc), actfun, epoch_count, dropout, l2, lrate, c, valid_c, test_c, ho_cor[0,1]))
+                    timestamp, run_time, args.TAG, args.X_file, args.Y_file, args.y_name, args.FEAT, args.WEIGHTS, x.shape[1], args.ho, layer_number, str(arc), actfun, epoch_count, dropout, l2, lrate, c, valid_c, test_c, ho_cor[0,1]))
                 out2.close()
+        
+        if args.save_yhat == 't':
+            yhat_cols = [c for c in yhats_reps.columns if c.startswith('yhat')]
+            yhats_reps.insert(loc=1, column = 'Mean', value = yhats_reps[yhat_cols].mean(axis=1))
+            yhats_reps.insert(loc=2, column = 'Median', value = yhats_reps[yhat_cols].median(axis=1))
+            yhats_reps.insert(loc=3, column = 'stdev', value = yhats_reps[yhat_cols].std(axis=1))
+
+            yhats_reps.to_csv(args.save+'_yhat.csv', index=True)
+                
         print('\nfinished!')
 
 
